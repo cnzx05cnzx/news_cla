@@ -1,11 +1,6 @@
 import random
-
-import numpy as np
-import pandas as pd
-from collections import Counter
 import pkuseg
 import torch
-from torch import nn
 from torchtext.legacy.data import BucketIterator, Field, TabularDataset
 from lstm import LSTM
 
@@ -56,7 +51,7 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
 
 # -----------------------------------模型训练--------------------------------------
 epochs = 100
-stop = 20
+stop = 10
 cnt = 0
 best_valid_acc = float('-inf')
 model_save_path = './model/torchtext.pkl'
@@ -120,5 +115,5 @@ for epoch in range(epochs):
         if cnt > stop:
             # 早停机制
             print("模型基本无变化，停止训练")
-            print("训练集最高准确率为%.2f" % best_valid_acc)
+            print("验证集最高准确率为%.2f" % best_valid_acc)
             break

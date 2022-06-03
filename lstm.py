@@ -9,6 +9,7 @@ class LSTM(nn.Module):
         self.lstm = nn.LSTM(emb_dim, out_dim, batch_first=True, dropout=0.5, bidirectional=True, num_layers=2)
         self.linear = nn.Sequential(
             nn.Linear(2 * out_dim, 64),
+            nn.Dropout(0.3),
             nn.ReLU(),
             nn.Linear(64, 5)
         )
