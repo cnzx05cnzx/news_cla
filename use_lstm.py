@@ -1,119 +1,138 @@
-import random
+import pandas as pd
 import pkuseg
 import torch
-from torchtext.legacy.data import BucketIterator, Field, TabularDataset
+from torchtext.vocab import build_vocab_from_iterator
 from lstm import LSTM
+from torch.utils.data import DataLoader, Dataset
+from torchtext.transforms import Truncate, PadTransform
+from utils import LstmConfig
+import torch.optim as optim
+import torch.nn.functional as F
 
-SEED = 721
-batch_size = 32
-learning_rate = 1e-3
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-torch.manual_seed(SEED)
+class TextCNNDataSet(Dataset):
+    def __init__(self, data, data_targets):
+        self.content = data
+        self.pos = data_targets
 
-seg = pkuseg.pkuseg()
+    def __getitem__(self, index):
+        return self.content[index], self.pos[index]
+
+    def __len__(self):
+        return len(self.pos)
 
 
 def tokenizer(text):
     return seg.cut(text)
 
 
-TEXT = Field(sequential=True, tokenize=tokenizer, fix_length=35)
-POS = Field(sequential=False, use_vocab=False)
+def yield_tokens(data_iter):
+    for _, text in data_iter.iterrows():
+        yield tokenizer(text['comment'])
 
-FIELD = [('label', None), ('content', TEXT), ('pos', POS)]
 
-df = TabularDataset(
-    path='./data/news.csv', format='csv',
-    fields=FIELD, skip_header=True)
+def collate_batch(batch):
+    label_list, text_list = [], []
+    truncate = Truncate(max_seq_len=20)  # 截断
+    pad = PadTransform(max_length=20, pad_value=vocab['<pad>'])
+    for (_text, _label) in batch:
+        label_list.append(label_pipeline(_label))
+        text = text_pipeline(_text)
+        text = truncate(text)
+        text = torch.tensor(text, dtype=torch.int64)
+        text = pad(text)
+        text_list.append(text)
 
-TEXT.build_vocab(df, min_freq=3, vectors='glove.6B.50d')
+    label_list = torch.tensor(label_list, dtype=torch.int64)
 
-train, valid = df.split(split_ratio=0.7, random_state=random.seed(SEED))
+    text_list = torch.vstack(text_list)
+    return label_list.to(config.device), text_list.to(config.device)
 
-train_iter, valid_iter = BucketIterator.splits(
-    (train, valid),
-    batch_sizes=(batch_size, batch_size),
-    device=device,
-    sort_key=lambda x: len(x.content),
-    sort_within_batch=False,
-    repeat=False
-)
 
-model = LSTM(len(TEXT.vocab), 64, 128).to(device)
+def train(train_fig):
+    epochs = train_fig.num_epochs
+    stop = train_fig.early_stop
+    cnt = 0
+    best_valid_acc = float('-inf')
+    model_save_path = train_fig.save_path
 
-import torch.optim as optim
-import torch.nn.functional as F
-
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-criterion = F.cross_entropy
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
-
-# -----------------------------------模型训练--------------------------------------
-epochs = 100
-stop = 10
-cnt = 0
-best_valid_acc = float('-inf')
-model_save_path = './model/torchtext.pkl'
-
-for epoch in range(epochs):
-    loss_one_epoch = 0.0
-    correct_num = 0.0
-    total_num = 0.0
-
-    for i, batch in enumerate(train_iter):
+    for epoch in range(epochs):
+        loss_one_epoch = 0.0
+        correct_num = 0.0
+        total_num = 0.0
         model.train()
-        pos, content = batch.pos, batch.content
-        # 进行forward()、backward()、更新权重
-        optimizer.zero_grad()
-        pred = model(content)
-        loss = criterion(pred, pos)
-        loss.backward()
-        optimizer.step()
+        for i, batch in enumerate(train_loader):
+            pos, content = batch[0], batch[1]
+            # 进行forward()、backward()、更新权重
+            optimizer.zero_grad()
+            pred = model(content)
+            loss = criterion(pred, pos)
+            loss.backward()
+            optimizer.step()
 
-        # 统计预测信息
-        total_num += pos.size(0)
-        # 预测有多少个标签是预测中的，并加总
-        correct_num += (torch.argmax(pred, dim=1) == pos).sum().float().item()
-        loss_one_epoch += loss.item()
+            total_num += pos.size(0)
+            correct_num += (torch.argmax(pred, dim=1) == pos).sum().float().item()
+            loss_one_epoch += loss.item()
 
-    loss_avg = loss_one_epoch / len(train_iter)
+        loss_avg = loss_one_epoch / len(train_iter)
 
-    print("Train: Epoch[{:0>3}/{:0>3}]  Loss: {:.4f} Acc:{:.2%}".
-          format(epoch + 1, epochs, loss_avg, correct_num / total_num))
+        print("Train: Epoch[{:0>3}/{:0>3}]  Loss: {:.4f} Acc:{:.2%}".
+              format(epoch + 1, epochs, loss_avg, correct_num / total_num))
 
-    # ---------------------------------------验证------------------------------
-    loss_one_epoch = 0.0
-    total_num = 0.0
-    correct_num = 0.0
+        # ---------------------------------------验证------------------------------
+        total_num = 0.0
+        correct_num = 0.0
 
-    model.eval()
-    for i, batch in enumerate(valid_iter):
-        pos, content = batch.pos, batch.content
-        pred = model(content)
-        pred.detach()
-        # 计算loss
+        model.eval()
+        for i, batch in enumerate(valid_loader):
+            pos, content = batch[0], batch[1]
+            pred = model(content)
+            pred.detach()
 
-        # 统计预测信息
-        total_num += pos.size(0)
-        # 预测有多少个标签是预测中的，并加总
-        correct_num += (torch.argmax(pred, dim=1) == pos).sum().float().item()
+            total_num += pos.size(0)
+            correct_num += (torch.argmax(pred, dim=1) == pos).sum().float().item()
 
-    # 学习率调整
-    scheduler.step()
+        scheduler.step()
 
-    print('valid Acc:{:.2%}'.format(correct_num / total_num))
+        print('valid Acc:{:.2%}'.format(correct_num / total_num))
 
-    # 每个epoch计算一下验证集准确率如果模型效果变好，保存模型
-    if (correct_num / total_num) > best_valid_acc:
-        print("超过最好模型,保存")
-        best_valid_acc = (correct_num / total_num)
-        torch.save(model.state_dict(), model_save_path)
-        cnt = 0
-    else:
-        cnt = cnt + 1
-        if cnt > stop:
-            # 早停机制
-            print("模型基本无变化，停止训练")
-            print("验证集最高准确率为%.2f" % best_valid_acc)
-            break
+        # 每个epoch计算一下验证集准确率如果模型效果变好，保存模型
+        if (correct_num / total_num) > best_valid_acc:
+            print("超过最好模型,保存")
+            best_valid_acc = (correct_num / total_num)
+            torch.save(model.state_dict(), model_save_path)
+            cnt = 0
+        else:
+            cnt = cnt + 1
+            if cnt > stop:
+                # 早停机制
+                print("模型基本无变化，停止训练")
+                print("验证集最高准确率为%.2f" % best_valid_acc)
+                break
+
+
+if __name__ == '__main__':
+    config = LstmConfig()
+    torch.manual_seed(config.seed)
+    seg = pkuseg.pkuseg()
+
+    train_iter = pd.read_csv('./data/news_train.csv')
+    valid_iter = pd.read_csv('./data/news_valid.csv')
+
+    vocab = build_vocab_from_iterator(yield_tokens(train_iter), min_freq=5, specials=['<unk>', '<pad>'])
+    vocab.set_default_index(vocab["<unk>"])
+
+    text_pipeline = lambda x: vocab(tokenizer(x))
+    label_pipeline = lambda x: int(x)
+
+    train_iter = TextCNNDataSet(list(train_iter['comment']), list(train_iter['pos']))
+    valid_iter = TextCNNDataSet(list(valid_iter['comment']), list(valid_iter['pos']))
+
+    train_loader = DataLoader(train_iter, batch_size=config.batch_size, shuffle=True, collate_fn=collate_batch)
+    valid_loader = DataLoader(valid_iter, batch_size=config.batch_size, shuffle=False, collate_fn=collate_batch)
+
+    model = LSTM(len(vocab), 64, 128).to(config.device)
+    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+    criterion = F.cross_entropy
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+    train(config)
