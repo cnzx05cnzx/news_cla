@@ -1,11 +1,14 @@
+import time
+
 import pandas as pd
 import pkuseg
 import torch
 from torchtext.vocab import build_vocab_from_iterator
 from lstm import LSTM
+from gru import GRU
 from torch.utils.data import DataLoader, Dataset
 from torchtext.transforms import Truncate, PadTransform
-from utils import LstmConfig
+from utils import OtherConfig
 import torch.optim as optim
 import torch.nn.functional as F
 
@@ -57,9 +60,8 @@ def train(train_fig):
     model_save_path = train_fig.save_path
     # print(model)
 
-    fgm = FGM(model)
-
     for epoch in range(epochs):
+        t_a = time.time()
         loss_one_epoch = 0.0
         correct_num = 0.0
         total_num = 0.0
@@ -71,19 +73,17 @@ def train(train_fig):
             loss = criterion(pred, pos)
             loss.backward()
 
-
             optimizer.step()
             optimizer.zero_grad()
 
             total_num += pos.size(0)
             correct_num += (torch.argmax(pred, dim=1) == pos).sum().float().item()
             loss_one_epoch += loss.item()
-            print(i)
 
         loss_avg = loss_one_epoch / len(train_iter)
-
-        print("Train: Epoch[{:0>3}/{:0>3}]  Loss: {:.4f} Acc:{:.2%}".
-              format(epoch + 1, epochs, loss_avg, correct_num / total_num))
+        t_b = time.time()
+        print("Train: Epoch[{:0>3}/{:0>3}]  Loss: {:.4f} Acc:{:.2%}  Time:{:.2}".
+              format(epoch + 1, epochs, loss_avg, correct_num / total_num, t_b - t_a))
 
         # ---------------------------------------验证------------------------------
         total_num = 0.0
@@ -113,12 +113,12 @@ def train(train_fig):
             if cnt > stop:
                 # 早停机制
                 print("模型基本无变化，停止训练")
-                print("验证集最高准确率为%.2f" % best_valid_acc)
+                print("验证集最高准确率为%.4f" % best_valid_acc)
                 break
 
 
 if __name__ == '__main__':
-    config = LstmConfig()
+    config = OtherConfig()
     torch.manual_seed(config.seed)
     seg = pkuseg.pkuseg()
 
@@ -137,7 +137,8 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_iter, batch_size=config.batch_size, shuffle=True, collate_fn=collate_batch)
     valid_loader = DataLoader(valid_iter, batch_size=config.batch_size, shuffle=False, collate_fn=collate_batch)
 
-    model = LSTM(len(vocab), 64, 128).to(config.device)
+    # model = LSTM(len(vocab), 64, 128).to(config.device)
+    model = GRU(len(vocab), 64, 128).to(config.device)
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
     criterion = F.cross_entropy
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)

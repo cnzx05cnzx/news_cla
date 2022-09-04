@@ -23,7 +23,7 @@ class BertConfig(object):
         self.learning_rate = 1e-3  # 学习率
         self.out_dim = 64  # 输出维度
 
-class LstmConfig(object):
+class OtherConfig(object):
     """配置参数"""
 
     def __init__(self):
@@ -34,7 +34,7 @@ class LstmConfig(object):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # 设备
         # self.device = torch.device('cpu')  # 设备
 
-        self.seed = 721
+        self.seed = 114514
         self.dropout = 0.5  # 随机失活
         self.early_stop = 10  # 早停机制
         self.num_classes = 5  # 类别数
