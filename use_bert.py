@@ -4,28 +4,10 @@ import pandas as pd
 import torch.nn as nn
 from transformers import BertModel
 from transformers import BertTokenizer
-from sklearn.model_selection import train_test_split
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.optim import AdamW
-
-SEED = 721
-batch_size = 32
-learning_rate = 1e-3
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-torch.manual_seed(SEED)
-
-
-data = pd.read_csv('./data/news.csv')
-
-x = data['comment'].to_numpy()
-y = data['pos'].to_numpy()
-
-x_train, x_valid, y_train, y_valid = train_test_split(x, y, test_size=0.3, random_state=SEED)
-
-model_choice = './hfl/chinese-bert-wwm'
-
-tokenizer = BertTokenizer.from_pretrained(model_choice)
+from utils import BertConfig
+import torch.nn.functional as F
 
 
 # 进行token,预处理
@@ -54,24 +36,6 @@ def preprocessing_for_bert(text):
     return input_ids, attention_masks
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(device)
-MAX_LEN = 35
-batch_size = 32
-
-# 在train，valid上运行 preprocessing_for_bert 转化为指定输入格式
-train_inputs, train_masks = preprocessing_for_bert(x_train)
-valid_inputs, valid_masks = preprocessing_for_bert(x_valid)
-train_labels = torch.tensor(y_train)
-valid_labels = torch.tensor(y_valid)
-
-# 创建DataLoader
-train_data = TensorDataset(train_inputs, train_masks, train_labels)
-train_dataloader = DataLoader(train_data, sampler=RandomSampler(train_data), batch_size=batch_size)
-valid_data = TensorDataset(valid_inputs, valid_masks, valid_labels)
-valid_dataloader = DataLoader(valid_data, sampler=SequentialSampler(valid_data), batch_size=batch_size)
-
-
 class BertClassifier(nn.Module):
     def __init__(self, out_dim, res):
         super(BertClassifier, self).__init__()
@@ -95,7 +59,6 @@ class BertClassifier(nn.Module):
                                              attention_mask=attention_mask)
 
         # outputs = self.drop(pooled_output)
-
         out, (h, c) = self.lstm(enbedding)
         out = torch.cat((h[-2, :, :], h[-1, :, :]), dim=1)
         out = self.linear(out)
@@ -115,12 +78,8 @@ def initialize_model():
     optimizer = AdamW(bert_classifier.parameters(),
                       lr=2e-5,  # 默认学习率
                       )
-
-    return bert_classifier, optimizer
-
-
-# 实体化loss function
-criterion = nn.CrossEntropyLoss()  # 交叉熵
+    criterion = F.cross_entropy  # 交叉熵
+    return bert_classifier, optimizer, criterion
 
 
 def train(model, train_dataloader, valid_dataloader, epochs, path):
@@ -182,14 +141,77 @@ def train(model, train_dataloader, valid_dataloader, epochs, path):
             best_loss = valid_loss
             best_acc = valid_accuracy
             torch.save(model.state_dict(), path)  # save entire net
-            print('保存最好效果模型')
+            print('保存loss最小模型')
 
-        print("\n")
     print("验证集最高准确率为%.2f" % best_acc)
 
 
-t_epoch = 10
-net, optimizer = initialize_model()
-save_path = './model/try_bert_params.pkl'
+def test(Config, model, test_iter):
+    # 测试-------------------------------
+    model.load_state_dict(torch.load(Config.save_path))
+    model.eval()
+    t_a = time.time()
+    total_acc, total_loss = 0, 0
+    for i, batch in enumerate(test_iter):
+        with torch.no_grad():
+
+            model.zero_grad()
+            b_input_ids, b_attn_mask, b_labels = tuple(t.to(device) for t in batch)
+            outputs = model(b_input_ids, b_attn_mask)
+            pos = b_labels.to(Config.device)
+            loss = criterion(outputs, pos)
+
+        true = pos.data.cpu()
+        predict = torch.max(outputs.data, 1)[1].cpu()
+        total_loss += float(loss.item())
+        total_acc += torch.eq(predict, true).sum().float().item()
+
+    total_acc = total_acc / len(test_iter.dataset)
+    total_loss = total_loss / len(test_iter)
+
+    t_b = time.time()
+    msg = 'Test Loss: {0:>5.2},  Test Acc: {1:>6.2%},  Time: {2:>7.2}'
+    print(msg.format(total_loss, total_acc, t_b - t_a))
+
+
+config = BertConfig()
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+torch.manual_seed(config.seed)
+
+model_choice = './hfl/chinese-bert-wwm'
+
+tokenizer = BertTokenizer.from_pretrained(model_choice)
+
+MAX_LEN = 35
+
+data_train = pd.read_csv('./data/news_train.csv')
+x_train, y_train = data_train['comment'].to_numpy(), data_train['pos'].to_numpy()
+
+data_valid = pd.read_csv('./data/news_valid.csv')
+x_valid, y_valid = data_valid['comment'].to_numpy(), data_valid['pos'].to_numpy()
+
+data_test = pd.read_csv('./data/news_test.csv')
+x_test, y_test = data_test['comment'].to_numpy(), data_test['pos'].to_numpy()
+
+train_inputs, train_masks = preprocessing_for_bert(x_train)
+valid_inputs, valid_masks = preprocessing_for_bert(x_valid)
+test_inputs, test_masks = preprocessing_for_bert(x_test)
+train_labels = torch.tensor(y_train)
+valid_labels = torch.tensor(y_valid)
+test_labels = torch.tensor(y_test)
+
+# 创建DataLoader
+train_data = TensorDataset(train_inputs, train_masks, train_labels)
+train_dataloader = DataLoader(train_data, sampler=RandomSampler(train_data), batch_size=config.batch_size)
+valid_data = TensorDataset(valid_inputs, valid_masks, valid_labels)
+valid_dataloader = DataLoader(valid_data, sampler=SequentialSampler(valid_data), batch_size=config.batch_size)
+test_data = TensorDataset(test_inputs, test_masks, test_labels)
+test_dataloader = DataLoader(test_data, sampler=SequentialSampler(test_data), batch_size=config.batch_size)
+
+net, optimizer, criterion = initialize_model()
 print("Start training and validating:")
-train(net, train_dataloader, valid_dataloader, t_epoch, save_path)
+train(net, train_dataloader, valid_dataloader, config.num_epochs, config.save_path)
+print("Start testing:")
+test(config, net, test_dataloader)

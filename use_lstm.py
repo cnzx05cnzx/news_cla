@@ -55,6 +55,9 @@ def train(train_fig):
     cnt = 0
     best_valid_acc = float('-inf')
     model_save_path = train_fig.save_path
+    # print(model)
+
+    fgm = FGM(model)
 
     for epoch in range(epochs):
         loss_one_epoch = 0.0
@@ -63,16 +66,19 @@ def train(train_fig):
         model.train()
         for i, batch in enumerate(train_loader):
             pos, content = batch[0], batch[1]
-            # 进行forward()、backward()、更新权重
-            optimizer.zero_grad()
             pred = model(content)
+
             loss = criterion(pred, pos)
             loss.backward()
+
+
             optimizer.step()
+            optimizer.zero_grad()
 
             total_num += pos.size(0)
             correct_num += (torch.argmax(pred, dim=1) == pos).sum().float().item()
             loss_one_epoch += loss.item()
+            print(i)
 
         loss_avg = loss_one_epoch / len(train_iter)
 
